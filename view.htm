@@ -1,0 +1,659 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=7, IE=9, IE=10">
+    <meta name="viewport" content="initial-scale=1, maximum-scale=1,user-scalable=no">
+    <title>Crack Track Viewer</title>
+    <link rel="stylesheet" href="https://js.arcgis.com/3.30/dijit/themes/claro/claro.css">
+    <link rel="stylesheet" href="http://js.arcgis.com/3.30/dojox/grid/resources/Grid.css">
+    <link rel="stylesheet" href="http://js.arcgis.com/3.30/dojox/grid/resources/claroGrid.css">
+    <link rel="stylesheet" href="https://js.arcgis.com/3.30/esri/css/esri.css">
+    <style>
+      html, body { height: 100%; width: 100%; font-family:helvetica,Verdana,arial,sans-serif; margin: 0; padding: 0; }
+      #map{ margin: 0; padding: 0; border:1px solid #000; }
+      #HomeButton1 {
+        position: absolute;
+        top: 95px;
+        left: 20px;
+        z-index: 1;
+      }
+      #BasemapToggle1 {
+        position: absolute;
+        top: 20px;
+        right: 20px;
+        z-index: 1;
+      }
+      #FilterButton {
+        position: absolute;
+        top: 120px;
+        right: 18px;
+        z-index: 1;
+      }
+ 
+      /* center the image in the popup */
+      .esriViewPopup .gallery { margin: 0 auto !important; }
+    </style>
+
+    <script>
+      // helpful for understanding dojoConfig.packages vs. dojoConfig.paths:
+      // http://www.sitepen.com/blog/2013/06/20/dojo-faq-what-is-the-difference-packages-vs-paths-vs-aliases/
+      //add cluster marker functions
+      var dojoConfig = { 
+        paths: {
+          extras: location.pathname.replace(/\/[^/]+$/, "") + "/extras"
+        }
+      };
+    </script>
+    <script src="http://js.arcgis.com/3.30/"></script>
+
+    <script>
+      var theHostName = window.location.hostname;  //fix for NetMotion changing server name (tpd-as001.tacoma.lcl) in URL
+      //console.error(theHostName);
+      var map;
+      var createReport = "";  //check for report generation
+      var qt; //query task
+      var featureLayer; //for querying attachments
+
+      require([
+        "dojo/parser", 
+        "dojo/ready",
+        "dojo/_base/array",
+        "dojo/_base/Color",
+        "dojo/dom-style",
+        "dojo/query",
+
+        "esri/map", 
+        "esri/request",
+        "esri/graphic",
+        "esri/geometry/Extent",
+        
+        "esri/dijit/HomeButton",
+        "esri/dijit/BasemapToggle",
+        "esri/layers/ArcGISDynamicMapServiceLayer",
+
+        "esri/symbols/SimpleMarkerSymbol",
+        "esri/symbols/SimpleFillSymbol",
+        "esri/symbols/PictureMarkerSymbol",
+        "esri/renderers/ClassBreaksRenderer",
+
+        "esri/layers/GraphicsLayer",
+        "esri/SpatialReference",
+        "esri/dijit/PopupTemplate",
+        "esri/geometry/Point",
+
+        "esri/dijit/editing/AttachmentEditor",
+        
+        "esri/InfoTemplate",
+        "esri/tasks/query",
+        "esri/tasks/QueryTask",
+        "dojox/grid/DataGrid",
+        "dojo/data/ItemFileReadStore",
+
+        "extras/ClusterLayer",
+        "esri/layers/FeatureLayer",
+
+        "dijit/layout/BorderContainer", 
+        "dijit/layout/ContentPane",
+        "dijit/form/Button",
+        "dijit/registry",
+        
+        "dijit/form/DateTextBox", 
+
+        "dojo/domReady!"
+      ], function(
+        parser, ready, arrayUtils, Color, domStyle, query,
+        Map, esriRequest, Graphic, Extent, HomeButton, BasemapToggle, ArcGISDynamicMapServiceLayer,
+        SimpleMarkerSymbol, SimpleFillSymbol, PictureMarkerSymbol, ClassBreaksRenderer,
+        GraphicsLayer, SpatialReference, PopupTemplate, Point,
+        AttachmentEditor,
+        InfoTemplate, Query, QueryTask,
+        DataGrid, ItemFileReadStore, 
+        ClusterLayer, FeatureLayer,
+        BorderContainer, ContentPane, Button, registry, DateTextBox
+      ) {
+        ready(function() {
+          parser.parse();
+
+          var clusterLayer;
+          var popupOptions = {
+            "markerSymbol": new SimpleMarkerSymbol("circle", 20, null, new Color([0, 0, 0, 0.25])),
+            "marginLeft": "20",
+            "marginTop": "20"
+          };
+          
+          
+          //Click function for grid row selection
+          dojo.connect(grid, "onRowClick", onRowClickHandler);
+
+          map = new Map("map", {
+            basemap: "topo",
+            center: [-122.461348, 47.242549],
+            zoom: 12
+          });
+
+          map.on("load", function() {
+
+            // Hide the popup's ZoomTo link as it doesn't make sense for cluster features
+            domStyle.set(query("a.action.zoomTo")[0], "display", "none");
+
+            // Query to get all the data.
+            var q = new Query();
+            q.outFields = ["*"];
+            q.returnGeometry = true;
+            //q.where = "1=1";  //select all
+            q.where = "HideData='No'";  //select all non-sensitive data(non-undercover)
+            q.outSpatialReference = map.spatialReference;    //convert x,y to ESRI Web Mercator
+            //q.outSpatialReference = {"wkid": 102100};    //convert x,y to ESRI Web Mercator
+            //q.outSpatialReference = {"wkid": 4326};    //convert x,y to lat/lon
+            qt = new QueryTask("http://" + theHostName + "/arcgis/rest/services/CrackTrack/MapServer/0");
+            qt.execute(q).then(addClusters, error);
+
+            //Use featurelayer to query for attachments
+            featureLayer = new esri.layers.FeatureLayer("http://" + theHostName + "/arcgis/rest/services/CrackTrack/MapServer/0", {
+              mode : esri.layers.FeatureLayer.MODE_ONDEMAND
+            });
+            
+            //Web service for additional support map layers
+            var pathURL = "http://" + theHostName + "/arcgis/rest/services/CrackTrackSupportData/MapServer";   //web service
+            var dynamicMapServiceLayer = new ArcGISDynamicMapServiceLayer(pathURL,{
+              opacity: 0.7,
+              visible: true
+            });
+    
+            //dynamicMapServiceLayer.setVisibleLayers([0]);  //turn on specific layers
+            map.addLayer(dynamicMapServiceLayer);  //Add features layer to map 
+            
+
+          });
+
+
+          //Add home button
+          var home = new HomeButton({
+            map: map
+          }, "HomeButton1");
+          home._homeNode.title = "Zoom to Tacoma";   //change default title
+          home.startup();
+          
+          //Add Basemap Toggle
+          var toggle = new BasemapToggle({
+            map: map,
+            basemap: "satellite"
+          }, "BasemapToggle1");
+          toggle.startup();
+
+        //Listen for Search Map button click then ...
+        registry.byId("search").on("click", dataFilter);
+
+        //Listen for Reset Map button click then ...
+        registry.byId("reset").on("click", resetMap);
+
+        //Listen for Printable Report button click then ...
+        registry.byId("report").on("click", dataReport);
+        
+        //Get today's date for search box
+        var todaysDate = getTodaysDate();
+        document.getElementById('date2').value = todaysDate;
+        
+    function getTodaysDate(){
+      var today = new Date();
+      var dd = today.getDate();
+      var mm = today.getMonth()+1; //January is 0!
+      var yyyy = today.getFullYear();
+      
+      if(dd<10) {
+          dd='0'+dd
+      } 
+      
+      if(mm<10) {
+          mm='0'+mm
+      } 
+      
+      today = mm+'/'+dd+'/'+yyyy;
+      return today;
+    }
+    
+    function dataReport() {
+        createReport = "Y"; //set report check variable
+        dataFilter(); //refresh data query before doing report
+    }
+       
+    function resetMap() {
+      document.getElementById('keywordBox').value = ''; //reset keyword box
+      document.getElementsByName("sector")[0].checked = true;  //reset Police Sector to  All[0]
+      document.getElementsByName("tip")[0].checked = true;  //reset Tip Type to All[0]
+      document.getElementById('date1').value = '07/1/2014' //reset start date
+      document.getElementById('date2').value = todaysDate; //reset end date
+      dataFilter();  //rerun data query
+    }
+
+    function dataFilter() {
+      var mySQLstring = "";    //where string for query
+      var queryFields = ["Drug_Type", "Drug_List", "Vehicle_License", "Vehicle_License_2", "Vehicle_License_3", "Site_Address", "Narrative"];     //fields to search
+      
+      //Close any open popups
+      map.infoWindow.hide();
+
+      //Remove map layer
+      map.removeLayer(clusterLayer);
+      
+      //Hide the popup's ZoomTo link as it doesn't make sense for cluster features
+      domStyle.set(query("a.action.zoomTo")[0], "display", "none");
+  
+      //New query for new map layer
+      var q = new Query();
+      q.outFields = ["*"];
+      q.returnGeometry = true;
+      q.outSpatialReference = map.spatialReference;    //convert x,y to ESRI Web Mercator
+      
+      //Get selected Police Sector
+      var theSectors = document.getElementsByName("sector");
+        //loop through sector choices and find selected
+        for(var i = 0; i < theSectors.length; i++) {
+           if(theSectors[i].checked == true) {
+               var selectedSector = theSectors[i].value;
+           }
+         }
+      
+      //Get selected tip
+      var theTips = document.getElementsByName("tip");
+        //loop through tip choices and find selected
+        for(var i = 0; i < theTips.length; i++) {
+           if(theTips[i].checked == true) {
+               var selectedTip = theTips[i].value;
+           }
+         }
+
+       //Build query where string
+       //Check if any default search values have changed
+       if (selectedSector=='All' && selectedTip=='All' && dojo.byId("keywordBox").value.trim()=='' && dojo.byId("date1").value== '07/1/2014' && dojo.byId("date2").value== todaysDate) {          
+          //mySQLstring = "1=1";  //select all
+          mySQLstring = "HideData='No'";  //select all non-sensitive data(non-undercover)
+       } else {
+          if (selectedSector!=='All') {
+            //sector selected
+            mySQLstring = "HideData='No' AND Sector=" + selectedSector;
+          }
+
+          if (selectedTip!=='All') {
+            //tip type selected
+            if (mySQLstring.length>0) {
+              mySQLstring += " AND Tip_Type='" + selectedTip + "'";
+            } else {
+              mySQLstring = "HideData='No' AND Tip_Type='" + selectedTip + "'";
+            }
+          }
+
+          if (dojo.byId("keywordBox").value.trim()!=='') {
+            //build query string with value from search box
+            //This is the OR part of the query, so needs () around the string
+            dojo.forEach(queryFields, function(f,index) { 
+              if (index==0) {
+                  //first field
+                  if (mySQLstring.length>0) {
+                      //join to the existing SQL statement  - AND
+                      mySQLstring += " AND (" + f + " Like '%" + dojo.byId("keywordBox").value + "%'";
+                  } else {
+                      //start the new SQL statement
+                      mySQLstring = "HideData='No' AND (" + f + " Like '%" + dojo.byId("keywordBox").value + "%'";
+                  }
+              } else { 
+                  //rest of fields
+                  mySQLstring += " OR HideData='No' AND " + f + " Like '%" + dojo.byId("keywordBox").value + "%'";
+              }
+            });
+            
+            mySQLstring += ")";
+          }
+
+          //DATE range
+           //Using Entry_Date, but change to Call_Date once fields filled in  !!!!!!!!!!!!
+          //Need to add time value (23:59:59) to get all values for day on end date
+          //Could put a date check here if dates are not the default
+          if (mySQLstring.length>0) {
+              //join to the existing SQL statement
+              mySQLstring += " AND Entry_Date >= '" + dojo.byId("date1").value + "' AND Entry_Date <= '" + dojo.byId("date2").value + " 23:59:59'";     
+          } else {
+              //start the new SQL statement
+              mySQLstring += "HideData='No' AND Entry_Date >= '" + dojo.byId("date1").value + "' AND Entry_Date <= '" + dojo.byId("date2").value + " 23:59:59'";
+          }
+           
+       }
+
+        q.where = mySQLstring;  //select by tip type & keyword & DATE
+        
+
+      //call global QueryTask
+      qt.execute(q).then(addClusters, error);   //Add to map using cluster symbols
+    }
+    
+    
+    function addClusters(resp) {
+        //Create array of attributes for grid & report
+        var items = dojo.map(resp.features, function(f) {
+          return f.attributes;
+        });
+        
+        //Create printable report
+        if (createReport == "Y"){
+          openReport(items)
+        }
+        
+        //Create data object to be used in store
+        var data = {
+          identifier: "OBJECTID",  //This field needs to have unique values
+          items: items
+        };
+
+         //Create data store and bind to grid.
+        store = new ItemFileReadStore({ data:data });
+        var grid = dijit.byId('grid');
+        grid.setStore(store);
+
+        //Zoom back to the initial map extent - could make these global variables
+        map.centerAndZoom([-122.461348, 47.242549], 12);
+
+        //Map locations & attributes for popups and markers
+        var pointData = dojo.map(resp.features, function(f) {
+          return { "x": f.geometry.x, "y": f.geometry.y, "attributes": f.attributes };
+        });
+
+
+        //PopUp Info Template
+
+        var popupTemplate = new InfoTemplate();
+
+        popupTemplate.setTitle("Crack Track");
+        popupTemplate.setContent( "<b>Tip Type: </b>${Tip_Type}<br/>"
+                             + "<b>Site Address: </b>${Site_Address}<br/>"
+                             + "<b>Entry Date: </b>${Entry_Date:formatPopDate}<br/>"
+                             //hide/show details
+                             + "<br/><b><a id='Details' href='javascript:void(0);' onclick='toggle_visibility(${OBJECTID})' title='Toggle Details'>Details</a></b><br/>"
+                             + "<div id=${OBJECTID} style='display:none'>"
+                             + "<b>Record ID:</b> ${RecordID}<br/>"
+                             + "<b>Police Sector:</b> ${Sector}<br/>"
+                             + "<b>Police District:</b> ${District}<br/>"
+                             //fix time stamp on Call_Date
+                             + "<b>Call Date:</b> ${Call_Date:formatPopDate}<br/>"
+                             + "<b>Entry Date:</b> ${Entry_Date:formatPopDate}<br/>"
+                             + "<b>Anonymous:</b> ${Anonymous}<br/>"
+                             + "<b>Caller Name:</b> ${Caller_First_Name} ${Caller_Last_Name}, ${Caller_Address}, ${Caller_Phone}<br/>"
+                             + "<b>Suspect:</b> ${Suspect_First_Name} ${Suspect_Last_Name}, ${Suspect_Race}, ${Suspect_Gender}, ${Suspect_Height}, ${Suspect_Weight}<br/>"
+                             + "<b>Drug Type:</b> ${Drug_Type}<br/>"
+                             + "<b>List of Drugs:</b> ${Drug_List}<br/>"
+                             + "<b>Vehicle:</b> ${Vehicle_License}, ${Vehicle_State}, ${Vehicle_Model}, ${Vehicle_Make}, ${Vehicle_Year}, ${Vehicle_Color}, ${Other_Vehicle_Info}<br/>"
+                             + "<b>Narrative:</b> ${Narrative}<br/>"
+                             + "<b>Disposition:</b> ${Disposition}<br/>"
+                             + "</div>"
+                             + "<div id='the_attachments'>${OBJECTID:formatAttachment}</div>"
+                             + "<br/><a href='https://maps.google.com/?q=${Lat},${Lon}&z=20&layer=c&cbll=${Lat},${Lon}&cbp=11,0,0,0,0'  target='_blank'><b>Google Map - Street View</b></a>"
+                             + "${Parcel:formatAssessor}<br/>"  );
+
+            // cluster layer that uses OpenLayers style clustering
+            clusterLayer = new ClusterLayer({
+              "data": pointData,
+              "distance": 100,
+              "id": "clusters",
+              "labelColor": "#fff",
+              "labelOffset": 10,
+              "resolution": map.extent.getWidth() / map.width,
+              "singleColor": "#888",
+              "singleTemplate": popupTemplate
+            });
+            var defaultSym = new SimpleMarkerSymbol().setSize(4);
+            var renderer = new ClassBreaksRenderer(defaultSym, "clusterCount");
+
+            var picBaseUrl = "http://static.arcgis.com/images/Symbols/Shapes/";
+            var blue = new PictureMarkerSymbol(picBaseUrl + "BluePin1LargeB.png", 32, 32).setOffset(0, 15);
+            var green = new PictureMarkerSymbol(picBaseUrl + "GreenPin1LargeB.png", 64, 64).setOffset(0, 15);
+            var red = new PictureMarkerSymbol(picBaseUrl + "RedPin1LargeB.png", 72, 72).setOffset(0, 15);
+            renderer.addBreak(0, 2, blue);
+            renderer.addBreak(2, 10, green);
+            renderer.addBreak(10, 1001, red);
+
+            clusterLayer.setRenderer(renderer);
+            map.addLayer(clusterLayer);         //initial layer, replace with filtered data when needed
+
+            // close the info window when the map is clicked
+            map.on("click", cleanUp);
+            
+            map.on("key-down", function(e) {
+              if (e.keyCode === 27) {    // close the info window when esc is pressed
+                cleanUp();
+              }
+            });
+          }
+
+          function onRowClickHandler(evt){
+          //Zoom to the selected data when the user clicks a row
+          //instead of using graphic.geometry use lat/long from data
+            //Create point using lat/long from data
+            var newCenter = new Point([grid.getItem(evt.rowIndex).Lon, grid.getItem(evt.rowIndex).Lat]);
+            
+            //center and zoom
+            map.centerAndZoom(newCenter, 19);
+          }
+
+          function openReport(data) {
+            //var newHTML = "<html>" + data +  "</html>";  //format current data query
+            var newHTML = "<div style='clear:both;'><b>CRACK TRACK REPORT</b> (count=" + data.length + ") <i>..blank fields removed, this report can be formatted many ways...</i><hr color='#ACB1DB'></div>";
+            
+            for (var i=0, il=data.length; i<il; i++) {
+              //loop through all records
+              var featureAttributes = data[i];
+                //Individual record details
+                for (att in featureAttributes) {
+                  //remove null or blank items
+                  if (featureAttributes[att] != null && featureAttributes[att] != ''){
+                    if (att=='Entry_Date' || att=='Call_Date'){
+                      newHTML += "<b>" + att + ":</b>  " + formatPopDate(featureAttributes[att]) + "<br>";
+                    } else {
+                      newHTML += "<b>" + att + ":</b>  " + featureAttributes[att] + "<br>";
+                    }
+                  }
+                }
+              
+              //Separator between records
+              newHTML += "<div style='clear:both;'><hr color='#ACB1DB'></div>";
+            }
+            
+            //Global replace all field name values - could make an array of values
+            //Global replace all "_" in field names
+            newHTML = newHTML.replace(/_/g," ")
+                   
+            var reportWindow = window.open();  //open new browser window
+            reportWindow.document.write(newHTML);   //fill new browser window with formatted data 
+            createReport = ""; //reset report generation check variable
+          }
+
+          function cleanUp() {
+            map.infoWindow.hide();
+            clusterLayer.clearSingles();
+          }
+
+          function error(err) {
+            alert("something failed: ", err);
+            console.log("something failed: ", err);
+          }
+
+          // show cluster extents...
+          // never called directly but useful from the console 
+          window.showExtents = function() {
+            var extents = map.getLayer("clusterExtents");
+            if ( extents ) {
+              map.removeLayer(extents);
+            }
+            extents = new GraphicsLayer({ id: "clusterExtents" });
+            var sym = new SimpleFillSymbol().setColor(new Color([205, 193, 197, 0.5]));
+
+            arrayUtils.forEach(clusterLayer._clusters, function(c, idx) {
+              var e = c.attributes.extent;
+              extents.add(new Graphic(new Extent(e[0], e[1], e[2], e[3], map.spatialReference), sym));
+            }, this);
+            map.addLayer(extents, 0);
+          }
+          
+
+
+        });
+      });          //end dojo load
+      
+
+  //Other functions mentioned on web page, not dependent on dojo require...
+  function toggle_visibility(id) {
+  //for hiding/display divs - Help link on address search box, etc
+    var e = document.getElementById(id);
+    if(e.style.display == 'block')
+    e.style.display = 'none';
+    else
+    e.style.display = 'block';
+  }
+
+  function formatGridDate(theDate, rowIndex) {
+     //format date string (instead of the Epoch numbers - query default)
+     var rowdata = this.grid.getItem(rowIndex);
+     var theDate = new Date(parseInt(rowdata.Entry_Date));
+
+     theDateString = 	dojo.date.locale.format(theDate, {
+  	  selector: 'date',
+  	  datePattern: 'MM/dd/yyyy' 
+	   });
+
+     return theDateString;
+  }
+
+  function formatPopDate(theDate) {
+     //format popup date string (instead of the Epoch numbers - query default)
+     theDateInt = 	new Date(new Date(parseInt(theDate)));
+     theDateString = 	dojo.date.locale.format(theDateInt, {
+  	  selector: 'date',
+  	  //datePattern: 'MM/dd/yyyy h:m a'   //with time - only on entry date
+  	  //datePattern: 'MM/dd/yyyy'
+      datePattern: 'EEEE, MMMM d, yyyy'    // day of week
+	   });
+     
+     return theDateString;
+  }
+
+    function formatAssessor(value) {
+     //Format assessor link if parcel number exists
+
+     if (value=='') { //blank value
+        return "";
+     } else {   //format link to assessor
+        return " | <a href='http://epip.co.pierce.wa.us/CFApps/atr/epip/searchResults.cfm?s1=" + value + "&stype=parcel'  target='_blank'><b>Assessor</b></a>";
+     }    
+    }
+
+    function formatAttachment(objectId) {
+     //Format asttachment link if attachment exists
+      //queryAttachmentInfos(objectId,callback?,errback?)
+      //https://developers.arcgis.com/javascript/jsapi/featurelayer.html#queryattachmentinfos
+     var theImg = "";
+     featureLayer.queryAttachmentInfos(objectId, function (infos) {
+       if (infos.length>0) {
+
+           for (var i=0; i<infos.length; i++) {
+              //theImg += "<img src='" + infos[i].url + "' width='100' height='100' />";
+              theImg += "<a href='" + infos[i].url + "'  target='_blank'><img src='" + infos[i].url + "' width='100' height='100' /></a>";
+           } 
+            //update popup with image(s)
+            document.getElementById('the_attachments').innerHTML= theImg;
+
+       }
+     });
+
+    }
+      
+    </script>
+  </head>
+  
+  <body class="claro">
+    <div data-dojo-type="dijit/layout/BorderContainer" data-dojo-props="design:'headline'"  style="width:100%;height:100%;margin:0;">
+      <div id="map" data-dojo-type="dijit/layout/ContentPane" data-dojo-props="region:'center'"> 
+           <div id="HomeButton1"></div>
+           <div id="BasemapToggle1"></div>
+           <div id="FilterButton"><button id="showSearch" data-dojo-type="dijit/form/Button")" title="Close search form"  onclick='toggle_visibility("findData")' >Search</button></div>
+
+            <!-- Filter Search box - hide initially-->
+            <div id="findData"  title="Filter data"   
+              style="z-index: 1;background:#fff url('images/blueBodyBg3.gif') repeat-x top left;
+                      border-color:#717b87;border-style:solid;border-width:1px; 
+                      position: absolute; right: 20px; top: 120px;box-shadow: rgba(0,0,0,0.4)0px 2px 4px;
+                      padding:5px; display:none;">
+              <div>
+                <form>
+                  <b>Police Sector: </b>
+                  <input type="radio" name=sector value="All" checked >All
+                  <input type="radio" name=sector value="1" >1
+                  <input type="radio" name=sector value="2" >2
+                  <input type="radio" name=sector value="3" >3
+                  <input type="radio" name=sector value="4" >4
+                </form>
+                <form>
+                  <b>Tip Type: </b>
+                  <input type="radio" name=tip value="All" checked >All
+                  <input type="radio" name=tip value="Drug House" >Drug House
+                  <input type="radio" name=tip value="Grow Op" >Grow
+                  <input type="radio" name=tip value="Street Level" >Street
+                </form>
+              </div>
+
+              <div>
+                <!-- http://dojotoolkit.org/reference-guide/1.9/dijit/form/DateTextBox.html -->
+                <br>
+                <label for="date1"><b>Start Date:</b></label>
+                <input type="text" name="date1" id="date1" value="2014-07-01"
+                    data-dojo-type="dijit/form/DateTextBox"
+                    required="true" style="width:110px" />
+
+                <label for="date2"><b>&nbsp;&nbsp;End Date:</b></label>
+                <!--Maybe get the current date as the deafult ending date--->
+                <input type="text" name="date2" id="date2" value="2016-12-31"
+                    data-dojo-type="dijit/form/DateTextBox"
+                    required="true" style="width:110px" />
+
+              </div>
+
+              <div>
+                <br>
+                <b>Keyword:</b>&nbsp;&nbsp;<input id="keywordBox" style="width:240px;" />
+                <br><i>in Drug Type, Vehicle License, Narrative, and <br> Site Address fields</i> 
+              </div>
+              
+    
+              <div>
+                <!--update button functions programmatically-->
+                <br>
+                <button id="search" data-dojo-type="dijit/form/Button" title="Update map with selection">Update Map</button>
+                <button id="reset" data-dojo-type="dijit/form/Button" title="Show all data">Reset Map</button>
+                <button id="report" data-dojo-type="dijit/form/Button")" title="Create report of current selection">Report</button>
+                <button id="hideSearch" data-dojo-type="dijit/form/Button")" title="Close search form"  onclick='toggle_visibility("findData")' >Close</button>
+              </div>
+    
+           </div>   <!--end seach box-->
+
+      </div>
+
+      <!--Data Grid -->
+      <div data-dojo-type="dijit/layout/ContentPane" data-dojo-props="region:'bottom'" style="height:150px;">
+       <table data-dojo-type="dojox/grid/DataGrid" data-dojo-id="grid"  id="grid" data-dojo-props="rowsPerPage:'5', rowSelector:'20px'">
+        <thead>
+          <tr>
+            <!--use alias name for Find Task, name for Query Task-->
+            <th field="OBJECTID">ID</th>
+            <th field="Tip_Type">Tip</th>
+            <th field="Drug_Type">Drug</th>
+            <th field="Drug_List">List of Drugs</th>
+            <th field="Entry_Date" formatter="formatGridDate">Date</th>
+            <th field="Vehicle_License">Licenses</th>
+            <th field="Site_Address" width="100%">Address</th>
+          </tr>
+        </thead>
+      </table>
+      </div>
+
+    </div>
+  </body>
+</html>
+

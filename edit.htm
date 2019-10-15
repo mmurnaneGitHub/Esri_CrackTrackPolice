@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <!--from http://developers.arcgis.com/en/javascript/sandbox/sandbox.html?sample=ed_multipleAttrInspector -->
+    <!-- see also http://developers.arcgis.com/en/javascript/sandbox/sandbox.html?sample=ed_attribute_inspector -->
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=7, IE=9, IE=10">
+    <!--The viewport meta tag is used to improve the presentation and behavior
+    of the samples on iOS devices-->
+    <meta name="viewport" content="initial-scale=1, maximum-scale=1,user-scalable=no">
+    <title>Crack Track Edit Page</title>
+
+    <link rel="stylesheet" href="https://js.arcgis.com/3.30/dijit/themes/claro/claro.css">
+    <link rel="stylesheet" href="https://js.arcgis.com/3.30/esri/css/esri.css">
+    <style>
+      html,body {
+        height:100%;
+        width:100%;
+        /*background-color:#FFF;*/
+        font-family:helvetica,Verdana,arial,sans-serif;
+        margin:0;
+        padding:0;
+      }
+      #HomeButton1 {
+        position: absolute;
+        top: 95px;
+        left: 20px;
+        z-index: 1;
+      }
+      #leftPane {
+        width:125px;
+        margin:5px;
+        padding:0px;
+      }
+
+      #map {
+        margin:5px;
+        padding:0px;
+      }
+      .templatePicker {
+        border: none !important;
+        height: 98% !important;
+      }
+      
+      .roundedCorners{
+        border:solid 3px #2D669D;
+        border-radius:6px;
+      }
+      .shadow {
+        -webkit-box-shadow: 0 8px 6px -6px #999;
+        -moz-box-shadow: 0 8px 6px -6px #999;
+        box-shadow: 0 8px 6px -6px #999;
+      }
+      .esriPopup .titleButton.close{
+        /*hide default close button (x) - */
+        display:none;
+      }
+      .esriPopup .titleButton.maximize{
+        /*move maximize button over where close button was*/
+        right: 5px;
+      }
+      .esriAttributeInspector .atiLayerName {
+        /*hide Tip Type name*/
+        display:none;
+      }
+      .saveButton {
+        padding-left:45px;
+         margin:0px;width:16px; height:17px;
+       }
+      .closeButton {
+        padding-left:100px;
+         margin:0px;width:16px; height:17px;
+       }
+    /* set default size for Narrative field */
+    /*.esriAttributeInspector .atiTextAreaField {*/ 
+    .atiTextAreaField { 
+       height: 100px;
+       width: 176px;
+      }
+
+    </style>
+
+    <script src="https://js.arcgis.com/3.30/"></script>
+
+    <script>
+      var theHostName = window.location.hostname;  //fix for NetMotion changing server name (tpd-as001.tacoma.lcl) in URL
+      //console.error(theHostName);
+      var map;
+      var HomeButton;
+      
+      //Default variables for new location
+      var newAddress = "";
+      var newParcel = "";
+
+      //TemplatePicker widget to display templates for the specified feature layers
+      var templatePicker;
+      var selectedTemplate;  //for default tip type
+
+      var attInspector;  //attribute inspector      
+      var pointLayer1;  //edit the first feature layer
+      var selectQuery;  //new Query();
+            
+      //Query for site address/parcel lookup -----------------------------------
+      var locator;    //Address locater
+      var queryTask1, parcelAdd;  //Query for site address/parcel lookup
+      var t; //typing timer
+      var drawToolbar; //for adding points
+      var candidate_location;  //current candidate location geometry  - location variable for both ESRI geocode and address match location
+      //------------------------------------------------------------------------
+
+      require([
+        "esri/map",
+        "esri/toolbars/draw",
+        "esri/toolbars/edit",
+        "esri/graphic",
+        "esri/symbols/SimpleMarkerSymbol", "esri/symbols/SimpleLineSymbol",
+        "esri/symbols/Font", "esri/symbols/TextSymbol",
+        "esri/layers/FeatureLayer",
+        "esri/dijit/editing/TemplatePicker",
+        "esri/dijit/AttributeInspector",
+        "esri/tasks/locator",
+        "esri/tasks/query",
+        "esri/tasks/QueryTask",
+        "esri/SpatialReference",
+        "esri/geometry/Point",
+        "esri/dijit/HomeButton", 
+        "esri/config",
+        "esri/layers/ArcGISDynamicMapServiceLayer",
+        
+        "dojo/_base/array", 
+
+        "dojo/parser",
+        "dojo/dom-construct",
+        "dijit/layout/BorderContainer",
+        "dijit/layout/ContentPane",
+        "dijit/form/Button",
+        "dijit/form/TextBox",
+        "dijit/Dialog",
+        "dojo/_base/Color",
+        "dijit/registry",
+        "dojo/domReady!"
+      
+      ], function(
+          Map, Draw, Edit, Graphic, SimpleMarkerSymbol, SimpleLineSymbol,
+          Font, TextSymbol,  
+          FeatureLayer, TemplatePicker, AttributeInspector, 
+          Locator, Query, QueryTask, SpatialReference, Point,    
+          HomeButton, esriConfig, ArcGISDynamicMapServiceLayer, 
+          arrayUtils, 
+          parser, domConstruct, 
+          BorderContainer, ContentPane, Button, TextBox, Dialog, 
+          Color, registry 
+        ) {
+
+        parser.parse();   //need to do or map only half the height - set all variables
+
+        //This sample requires a proxy page to handle communications with the ArcGIS Server services. You will need to
+        //replace the url below with the location of a proxy on your machine. See the 'Using the proxy page' help topic
+        //for details on setting up a proxy page.
+        esri.config.defaults.io.proxyUrl = "/proxy";
+        esri.config.defaults.io.alwaysUseProxy = false;
+        
+        map = new Map("map", {
+          basemap: "topo",
+          center: [-122.461348, 47.242549],
+          zoom: 12
+        });
+ 
+        //Data to edit
+        var pointLayer = new FeatureLayer("http://" + theHostName + "/arcgis/rest/services/CrackTrack/FeatureServer/0", {
+          mode: FeatureLayer.MODE_SNAPSHOT,
+          outFields: ["*"]
+        });
+  
+        //Setup editing after layer added - function initEditing
+        map.on("layers-add-result", initEditing);
+
+        //Add edit data to map
+        map.addLayers([pointLayer]);
+
+            //Web service for additional support map layers
+            var pathURL = "http://" + theHostName + "/arcgis/rest/services/CrackTrackSupportData/MapServer";   //web service
+            var dynamicMapServiceLayer = new ArcGISDynamicMapServiceLayer(pathURL,{
+              opacity: 0.7,
+              visible: true
+            });
+    
+            //dynamicMapServiceLayer.setVisibleLayers([0]);  //turn on specific layers
+            map.addLayer(dynamicMapServiceLayer);  //Add features layer to map 
+        
+        //Geocode - setup for query street address or intersection (ESRI)
+        locator = new Locator("https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer");
+        locator.on("address-to-locations-complete", showResults);
+
+        //Geocode - setup for query site address  (address points)
+        findAddress1();
+
+        //Setup for query Sector & District
+        findSectorDistrict();
+
+        //Add home button ------------------------------------------------------
+        var home = new HomeButton({
+          map: map
+        }, "HomeButton1");
+        home._homeNode.title = "Zoom to Tacoma";   //change default title
+        home.startup(); //------------------------------------------------------
+ 
+        //Listen for Search Map button click then geocode
+        registry.byId("search").on("click", zoom2parcel);
+
+      function findSectorDistrict() {
+        //start Police Sector & District query functions
+        //build query
+        queryTask_SectorDistrict = new QueryTask("http://" + theHostName + "/arcgis/rest/services/CrackTrackSupportData/MapServer/0");
+
+        //build query filter
+        query_SectorDistrict = new Query();
+        query_SectorDistrict.returnGeometry = false; 
+        query_SectorDistrict.outFields = ["DISTRICT","Sector"];
+      }
+
+
+       function initEditing(evt) {
+        // https://developers.arcgis.com/en/javascript/jssamples/ed_attribute_inspector.html
+        //setup for identifying and editing existing points - see addPointNow for adding new records
+          pointLayer1 = evt.layers[0].layer;  //edit the first feature layer
+          selectQuery = new Query();
+
+          map.on("click", function(evt) {
+            //CLICK TOLERANCE
+            // Define a pick tolerance for points
+            var centerPoint = esri.geometry.Point(evt.mapPoint.x, evt.mapPoint.y, evt.mapPoint.spatialReference);
+            var mapWidth = map.extent.getWidth();
+            //Divide width in map units by width in pixels
+            var pixelWidth = mapWidth / map.width;
+            //Calculate a 10 pixel envelope width (5 pixel tolerance on each side)
+            var tolerance = 10 * pixelWidth;
+            //Build tolerance envelope and set it as the query geometry
+            var queryExtent = new esri.geometry.Extent
+              (1, 1, tolerance, tolerance, evt.mapPoint.spatialReference);
+            selectQuery.geometry = queryExtent.centerAt(centerPoint);
+
+            //original tolerance
+            //selectQuery.geometry = evt.mapPoint;
+
+            pointLayer1.selectFeatures(selectQuery, FeatureLayer.SELECTION_NEW, function(features) {
+              if (features.length > 0) {
+               //store the current feature
+                updateFeature = features[0];
+                map.infoWindow.setTitle("Crack Track Information");
+                map.infoWindow.show(evt.screenPoint,map.getInfoWindowAnchor(evt.screenPoint));
+                map.infoWindow.resize(350, 400);     //restore default size
+              } else {
+                map.infoWindow.hide();
+              }
+            });
+          });
+
+          map.infoWindow.on("hide", function() {
+            pointLayer.clearSelection();
+          });
+
+          //Loop through all fields and custom format some
+          var fieldInfos = dojo.map(pointLayer.fields,function(field){
+          if (field.name === 'Narrative') {
+            //change from default STRING_FIELD_OPTION_TEXTBOX
+            return {'fieldName': field.name,'label':field.alias, stringFieldOption:esri.dijit.AttributeInspector.STRING_FIELD_OPTION_TEXTAREA}
+          }
+          else if (field.name === 'OBJECTID' || field.name === 'Parcel' || field.name === 'Lat' || field.name === 'Lon' ) {
+           //don't show these fields
+           return {}
+          }
+          else {
+            return {'fieldName': field.name,'label':field.alias}
+          }
+          });
+          
+          var layerInfos = [{
+          'featureLayer': pointLayer,
+          'isEditable': true,
+          'showDeleteButton': false,
+          'fieldInfos':fieldInfos
+          }]
+          
+          attInspector = new AttributeInspector({
+            layerInfos:layerInfos
+          }, domConstruct.create("div"));
+
+          //Add a Close button next to the delete button -----------------------
+          var closeButton = new Button({ label: "Close", "class": "closeButton"});
+          domConstruct.place(closeButton.domNode, attInspector.deleteBtn.domNode, "after");
+
+          closeButton.on("click", function(){
+             updateFeature.getLayer().applyEdits(null, [updateFeature], null);  //save on close, not a cancel button
+             map.infoWindow.hide();
+          });
+
+          //Remove default close button (x) from upper right of popup by modifying CSS (above - .esriPopup .titleButton.close) - if button is visible & used changes will not be saved due to save changes immediately disabled on 10/19/2016
+          //--------------------------------------------------------------------
+
+          //Add a Save button next to the delete button ------------------------
+          var saveButton = new Button({ label: "Save", "class": "saveButton"});
+          domConstruct.place(saveButton.domNode, attInspector.deleteBtn.domNode, "after");
+         
+          saveButton.on("click", function(){
+            updateFeature.getLayer().applyEdits(null, [updateFeature], null);
+          });
+          //--------------------------------------------------------------------
+          
+          //Delete button workaround for adding save button limit v3.8 (disables default Delete button))
+          var deleteButton = new Button({ label: "Delete", "class": "saveButton"});
+          domConstruct.place(deleteButton.domNode, attInspector.deleteBtn.domNode, "after");
+         
+          deleteButton.on("click", function(){
+            //warning first
+            if (confirmationDialog()){
+              updateFeature.getLayer().applyEdits(null,null,[updateFeature]);
+              map.infoWindow.hide();
+            }
+          });
+
+          attInspector.on("attribute-change", function(evt) {
+            //store the updates to apply when the save button is clicked 
+            updateFeature.attributes[evt.fieldName] = evt.fieldValue;    //value to be updated
+            //updateFeature.getLayer().applyEdits(null, [updateFeature], null); //save changes immediately - but jumps user back to top of form each time 10/19/2016
+          });
+          
+          attInspector.on("next", function(evt) {
+            updateFeature = evt.feature;
+            console.log("Next " + updateFeature.attributes.objectid);
+          });
+          
+          //Default settings
+          map.infoWindow.setContent(attInspector.domNode);
+          map.infoWindow.resize(350, 400);
+ 
+        //End attribute inspector setup-----------------------------------------
+        
+        //Start manual method for adding new points ----------------------------
+        //TemplatePicker widget (legend) to display templates for the specified feature layers
+        //Get the editable layers
+        var layers = arrayUtils.map(evt.layers, function(result) {
+          return result.layer;
+        });
+
+        templatePicker = new TemplatePicker({
+          featureLayers: layers,
+          rows: 'auto',
+          columns: 'auto',
+          grouping: true
+        }, "templatePickerDiv");
+
+        templatePicker.startup();
+
+
+        templatePicker.on("selection-change", function() {
+          selectedTemplate = templatePicker.getSelected();
+          
+          if (selectedTemplate) {
+            switch (selectedTemplate.featureLayer.geometryType) {
+            case "esriGeometryPoint":
+              drawToolbar.activate(Draw.POINT);
+              break;
+            }
+          }
+        });
+
+       
+        //for adding points manually - map click
+        drawToolbar = new Draw(map);
+
+        drawToolbar.on("draw-end", function(evt) {
+          //add point to database and display the editable info window for newly created features
+          addPointNow(evt.geometry);
+        });
+        
+      }   //end edit setup
+
+      function confirmationDialog() {
+         var retVal = confirm("Are you sure you want to delete point?");
+         if( retVal == true ){
+      	  return true;
+         }else{
+      	  return false;
+         }
+      }
+
+      function getInfoWindowPositionPoint(feature) {
+        var point;
+        switch (feature.getLayer().geometryType) {
+        case "esriGeometryPoint":
+          point = feature.geometry;
+          break;
+        case "esriGeometryPolyline":
+          var pathLength = feature.geometry.paths[0].length;
+          point = feature.geometry.getPoint(0, Math.ceil(pathLength / 2));
+          break;
+        case "esriGeometryPolygon":
+          point = feature.geometry.getExtent().getCenter();
+          break;
+        }
+        return point;
+      }
+
+      function layerFieldToAttributes(fields) {
+        var attributes = {};
+        dojo.forEach(fields, function(field) {
+          attributes[field.name] = null;
+        });
+        return attributes;
+      }
+
+//Start ESRI address functions
+      function removeGraphic(graphicID){
+        dojo.forEach(map.graphics.graphics, function(g){
+            if (g && g.id === graphicID) {
+              //remove graphic with specific id
+              map.graphics.remove(g);
+            }
+          }, this);
+      }
+
+      function locate(address1) {
+        //find address using ESRI geocoder
+        removeGraphic('address'); //remove any existing address graphics
+        removeGraphic('addressTxt'); //remove any existing address text graphics
+        var add1 = address1 + ",Tacoma,WA";
+        var add = add1.split(",");
+        var address = {
+          Address : add[0],
+          City: add[1],
+          State: add[2],
+          Zip: add[3]
+        };
+        //alert(dojo.toJson(address));
+        locator.outSpatialReference= map.spatialReference;
+        locator.addressToLocations(address,["Loc_name"]);
+      }
+
+      function showResults(candidates) {
+        var geom;   //address coordinate variable
+        //address symbol
+        var symbol = new SimpleMarkerSymbol(SimpleMarkerSymbol.STYLE_CIRCLE, 20, new SimpleLineSymbol(SimpleLineSymbol.STYLE_SOLID, new Color([255,0,0, 0.5]), 10), new Color([255,0,0, 0.9])); 
+ 
+        if (candidates.addresses.length ==0) {
+          alert("Sorry, address not found");  //no addresses returned
+        } else {
+
+          //loop through return candidates
+          arrayUtils.every(candidates.addresses, function(candidate) {
+            if (candidate.score > 80) {
+              geom = candidate.location;  //address coordinates
+              candidate_location = geom;  //location variable for both ESRI geocode and address match location
+
+              //add address symbol
+              var graphic = new Graphic(geom, symbol);
+              graphic.id = "address";   //add id for later removal by id
+              map.graphics.add(graphic);    //add graphic to map
+ 
+              //add text next to graphic
+              var candidate_address = candidate.address.split(",");
+              newAddress = candidate_address[0];  //ESRI address - save for new record address
+              
+              var font = new Font().setSize("14pt").setWeight(Font.WEIGHT_BOLD).setFamily("Arial"); 
+              var textSymbol = new TextSymbol(candidate_address[0], font, new Color([0, 0, 0, 0.8])).setOffset(5, 15);
+              
+              //Add address text to map
+              var graphicTxt = new Graphic(geom, textSymbol);  //properties
+              graphicTxt.id = "addressTxt";   //add id for later removal by id
+              map.graphics.add(graphicTxt);   //add graphic to map
+
+              return false; //break out of loop after one candidate with score greater  than 80 is found.
+           }
+          });  //end loop
+
+          //zoom & center map to address
+          if(geom !== undefined){
+            //Change geom to offset map so no conflict with popup window
+            map.centerAndZoom(geom.offset(0,100),18);
+              //Start here for initial point placement with geocoded location   .........
+              addressAlert();  //popup for next step
+
+          } else {
+            alert("Sorry, address not found");  //no candidates over 80
+          }
+
+       }   //check for returned addresses>0
+      }
+//end ESRI address functions
+
+//start Site address query functions
+      function findAddress1() {
+        //start Site address query functions
+        //build query
+        queryTask1 = new QueryTask("https://gis.cityoftacoma.org/arcgis/rest/services/PDS/DARTlabels/MapServer/0");
+
+        //build query filter
+        query = new Query();
+        query.returnGeometry = true; 
+        query.outFields = ["PARCELNUMBER","MAPTIP"];
+        query.outSpatialReference = {wkid: 102100, latestWkid: 3857}; //spatial reference for the returned geometry - make same as map 102100
+        query.start = 0;  //Zero-based index indicating where to begin retrieving features
+        query.num = 10;  //retrieve 10 records - default
+      }
+
+      function execute1(myAddress) {
+        //find address candidates for  address search box
+        parcelAdd = ""; //default query
+        //SQL string
+        if (myAddress.split(" ")[0].length>4) {
+          //query by parcel number - more than 4 digits
+          //query.where = "PARCELNUMBER  LIKE '" + myAddress + "%' AND ROWNUM<" + theLength;
+          query.where = "PARCELNUMBER  LIKE '" + myAddress + "%'";   //limit at web service level (10 records) 
+          query.orderByFields = ["PARCELNUMBER"]; 
+          parcelAdd = "parcel";
+        } else {
+          //query by address
+          myAddress = myAddress.toUpperCase();  //capitalize string
+          myAddress = myAddress.replace(/ /," %")  //Add wildcards (leave spaces)
+          //query.where = "MAPTIP LIKE '" + myAddress + "%' AND ROWNUM<" + theLength;
+          query.where = "MAPTIP LIKE '" + myAddress + "%'";   //limit at web service level (10 records) 
+          query.orderByFields = ["MAPTIP"]; 
+        }
+
+        //execute query
+        queryTask1.execute(query,showResults1);
+      }
+
+      function showResults1(results) {
+        var s = "";  //message if zero results
+        var theLength = results.features.length;
+
+        if (theLength==0) {
+           document.getElementById("myY").value = 0;  //address not found in City database, so set to none
+        } else if (theLength==1) {  //if only one results make selection for user
+            var featureAttributes = results.features[0].attributes;
+            var featureGeometry = results.features[0].geometry;
+            if (parcelAdd=="parcel") {
+              a = featureAttributes['PARCELNUMBER'] + "|" + featureAttributes['MAPTIP'] + "|" + featureGeometry['x'] + "|" + featureGeometry['y'];
+            } else {
+              a = featureAttributes['PARCELNUMBER'] + "|" + featureAttributes['MAPTIP'] + "|" + featureGeometry['x'] + "|" + featureGeometry['y'];
+            }
+          setParcel1(a);  //set hidden string propeties in search box
+          
+        } else if (theLength>1) {
+          for (var i=0; i<theLength; i++) {
+            var featureAttributes = results.features[i].attributes;
+            var featureGeometry = results.features[i].geometry;
+            if (parcelAdd=="parcel") {
+              s = s + "<option value='" + featureAttributes['PARCELNUMBER'] + "|" + featureAttributes['MAPTIP'] + "|" + featureGeometry['x'] + "|" + featureGeometry['y'] + "'>" + featureAttributes['PARCELNUMBER'] + "</option>";
+            } else {
+              s = s + "<option value='" + featureAttributes['PARCELNUMBER'] + "|" + featureAttributes['MAPTIP'] + "|" + featureGeometry['x'] + "|" + featureGeometry['y'] + "'>" + featureAttributes['MAPTIP'] + "</option>";
+            }
+          }
+          //onselect set values from address point info
+          s = "<select size='" + theLength + "' onclick=\"setParcel1(this.value)\"  >" + s + "</select>";
+       }
+
+
+        dojo.byId("livesearch").innerHTML = s;
+
+      }
+
+    function zoom2parcel(){
+      if (document.getElementById("myY").value==0) {
+        alert("Cannot find '" + document.getElementById("addressSiteBox").value + "' in City database.  Will try approximate location instead.");
+        locate(document.getElementById("addressSiteBox").value);  //use ESRI geocoder since address not in database
+
+     } else {       //address in City database
+      
+        removeGraphic('address'); //remove any existing address graphics
+        removeGraphic('addressTxt'); //remove any existing address graphics
+
+        var symbol = new SimpleMarkerSymbol(SimpleMarkerSymbol.STYLE_CIRCLE, 20, new SimpleLineSymbol(SimpleLineSymbol.STYLE_SOLID, new Color([255,0,0, 0.5]), 10), new Color([255,0,0, 0.9])); 
+    
+              //convert coords to point for zooming and adding location to database
+              candidate_location = new Point(document.getElementById("myX").value, document.getElementById("myY").value, new SpatialReference({ wkid: 102100 })); 
+              //location plus offset
+              var candidate_location2 = new Point(document.getElementById("myX").value, parseFloat(document.getElementById("myY").value) + parseFloat(100.0), new SpatialReference({ wkid: 102100 })); 
+              var graphic = new Graphic(candidate_location, symbol);
+              //add id for later removal by id
+              graphic.id = "address";
+
+              //add graphic to map
+              map.graphics.add(graphic);
+ 
+              //add text next to graphic
+              var font = new Font().setSize("14pt").setWeight(Font.WEIGHT_BOLD).setFamily("Arial"); 
+              var textSymbol = new TextSymbol(document.getElementById("myAddress").value + " - " + document.getElementById("myParcelNumber").value, font, new Color([0, 0, 0, 0.8])).setOffset(5, 15); 
+              var graphicTxt = new Graphic(candidate_location, textSymbol);
+              //add id for later removal by id
+              graphicTxt.id = "addressTxt";
+              map.graphics.add(graphicTxt);
+
+          //zoom & center map
+          map.setLevel(18);
+          map.centerAt(candidate_location2);    //at offset location
+          
+          //Start here for accepting point at geocoded location and starting the attribute editing process   .........
+          newAddress = document.getElementById("myAddress").value; //Address
+          newParcel = document.getElementById("myParcelNumber").value; //Parcel
+          addressAlert();  //popup for next step
+          
+       }    //end City address check
+
+    }
+
+    function addressAlert() {
+        dijit.byId('pointPopup').show();  //yes/no to adding point
+    }
+
+    function addPoint() {
+      //Add geocoded point to database, but only if Tip Type has been selected (selectedTemplate)
+      if (!selectedTemplate) {
+         alert('Please select a "Tip Type" (left side of map) before adding a new location.');
+      } else {
+         addPointNow(candidate_location);      //FUNCTION FOR ADDING POINTS MANUALLY, ESRI GEOCODE, OR ADDRESS SELECTION
+      }  //end check for selected Tip Type
+ 
+
+    }
+
+//end Site address query functions
+
+      function addPointNow(geometry) {
+        //find sector & district and then pass on with geometry (deferred with error message)
+        var sector = null;
+        var district = null;
+        query_SectorDistrict.geometry = geometry;  //query point geometry 
+        
+        var findSectorDistrict = queryTask_SectorDistrict.execute(query_SectorDistrict);
+        //Using dojo deferred 'then' function to set callback and errback functions
+          findSectorDistrict.then(function(results) {
+            if (results.features.length > 0) {
+              //location within Tacoma (Police Sector & District)
+              sector = results.features[0].attributes.Sector.substr(0, 1);   //update sector variable
+              district = String(results.features[0].attributes.DISTRICT.substr(0, 4)); //update district variable
+              addPointNow2map(geometry, sector, district);  //add to map with auto-populated variables
+            } else {
+              //location outside Tacoma
+              addPointNow2map(geometry, sector, district);  //add to map with auto-populated variables (nulls)
+            }; 
+           }, function(err) {
+              alert("Error retrieving Sector and District results: " + err.message);
+              console.error("Sector and District Error: " + err.message);
+          }); //end deferred
+      }
+
+      function addPointNow2map(geometry, sector, district) {
+          //add new site with map click, local address geocode, or ESRI geocode
+          //see initEditing for identifying and editing existing records - may use global variable for some items in future
+         
+          if (map.infoWindow.isShowing) {
+            map.infoWindow.hide();
+          }
+
+         drawToolbar.deactivate();  //deactivate manual method of adding point to map
+
+          var fieldAttributes = layerFieldToAttributes(selectedTemplate.featureLayer.fields);
+          var newAttributes = dojo.mixin(fieldAttributes, selectedTemplate.template.prototype.attributes);
+          var newGraphic = new Graphic(geometry, null, newAttributes);
+
+          //Add default values
+          newGraphic.attributes.Sector = sector;  //Sector
+          newGraphic.attributes.District = district;  //District
+          newGraphic.attributes.Lat = geometry.getLatitude();   //Latitude
+          newGraphic.attributes.Lon = geometry.getLongitude();  //Longitude
+          newGraphic.attributes.Site_Address = newAddress; //Address
+          newGraphic.attributes.Parcel = newParcel; //Parcel
+
+          //Date of Call & Entry Date - sets pull-down calendar to current date, but doesn't select (special format for esriFieldTypeDate)
+          var currentDate = new Date();  //https://developers.arcgis.com/javascript/jssamples/mobile_citizenrequest.html
+          newGraphic.attributes.Entry_Date = Date.UTC(currentDate.getUTCFullYear(), currentDate.getUTCMonth(),
+                currentDate.getUTCDate(), currentDate.getUTCHours(), currentDate.getUTCMinutes(),
+                currentDate.getUTCSeconds(), 0);            
+          newGraphic.attributes.Call_Date = Date.UTC(currentDate.getUTCFullYear(), currentDate.getUTCMonth(),
+                currentDate.getUTCDate(), currentDate.getUTCHours(), currentDate.getUTCMinutes(),
+                currentDate.getUTCSeconds(), 0);            
+         
+          //Add new location - applyEdits
+          selectedTemplate.featureLayer.applyEdits([newGraphic], null, null, function() {
+            var screenPoint = map.toScreen(getInfoWindowPositionPoint(newGraphic));
+            templatePicker.clearSelection();   //remove selected Tip Type selection (for found address) because draw tool has been deactivated (need to make a selection again)
+
+               //CLICK TOLERANCE
+                // Define a pick tolerance for points
+                var centerPoint = esri.geometry.Point(getInfoWindowPositionPoint(newGraphic).x, getInfoWindowPositionPoint(newGraphic).y, getInfoWindowPositionPoint(newGraphic).spatialReference);
+                //alert(dojo.toJson(centerPoint));
+                var mapWidth = map.extent.getWidth();
+                var pixelWidth = mapWidth / map.width;  //Divide width in map units by width in pixels
+                //Calculate a 10 pixel envelope width (5 pixel tolerance on each side)
+                var tolerance = 10 * pixelWidth;
+                //Build tolerance envelope and set it as the query geometry
+                var queryExtent = new esri.geometry.Extent
+                  (1, 1, tolerance, tolerance, getInfoWindowPositionPoint(newGraphic).spatialReference);
+                selectQuery.geometry = queryExtent.centerAt(centerPoint);
+    
+                //original tolerance
+                //selectQuery.geometry = evt.mapPoint;
+    
+                //Select point
+                pointLayer1.selectFeatures(selectQuery, FeatureLayer.SELECTION_NEW, function(features) {
+                  if (features.length > 0) {
+                   //store the current feature
+                    updateFeature = features[0];
+                    attInspector.last()  //move to last feature in case this point has previous calls
+                    map.infoWindow.setTitle("Crack Track Information");
+                    map.infoWindow.show(screenPoint,map.getInfoWindowAnchor(screenPoint));
+                    map.infoWindow.maximize();   //maximize window for initial data entry
+                  } else {
+                    map.infoWindow.hide();
+                  }
+                });
+
+
+            if (newAddress == "") {
+             //point placed manually - remove selected Tip Type selection because draw tool has been deactivated (need to make a selection again)
+             templatePicker.clearSelection();
+            }
+            
+            //Empty out default values
+            newAddress = "";     //Address
+            newParcel = "";     //Parcel
+
+          });  //end applyEdits
+
+          
+      }   //end addPointNow
+
+//fix for HTML functions that could not be loaded until now
+
+      // Create an add location button programmatically:
+      var addLocationButton = new Button({
+          label: "YES, add location.",
+          onClick: function(){
+              // Do something:
+              dijit.byId('pointPopup').hide();
+              removeGraphic('address'); removeGraphic('addressTxt'); addPoint();
+          }
+      }, "addLocation");
+
+      // Create an adddress text box programmatically:
+      var addTextBox = new TextBox({
+          onKeyUp: function(){
+              //Wait (150ms) for typing to stop before sending request, start timer over when user begins typing again 
+                if ( t ) 
+                  { 
+                    clearTimeout( t ); 
+                    t=setTimeout(function(){execute1(dojo.byId('addressSiteBox').value)},150) 
+                  } 
+                else 
+                  { 
+                    t=setTimeout(function(){execute1(dojo.byId('addressSiteBox').value)},150) 
+                  } 
+                }
+      }, "addressSiteBox");
+
+
+  });  //end dojo load
+      
+
+  //Other functions mentioned on web page, not dependent on dojo require...
+  function toggle_visibility(id) {
+  //for hiding/display divs - Help link on address search box, etc
+    var e = document.getElementById(id);
+    if(e.style.display == 'block')
+    e.style.display = 'none';
+    else
+    e.style.display = 'block';
+  }
+
+
+    function setParcel1(number){
+      var myValues = number.split("|");
+      document.getElementById("myParcelNumber").value = myValues[0]; //update parcel number box - hidden
+      document.getElementById("myAddress").value = myValues[1]; //update selected address box - hidden
+      document.getElementById("myX").value = myValues[2]; //update x-location - hidden
+      document.getElementById("myY").value = myValues[3]; //update y-location - hidden
+
+      if (parcelAdd=="parcel") {
+        document.getElementById("addressSiteBox").value = myValues[0]; //place selected parcel into search box 
+      } else {
+        document.getElementById("addressSiteBox").value = myValues[1]; //place selected address into search box 
+      }
+
+      dojo.byId("livesearch").innerHTML =  ""; //remove suggested addresses       
+    }
+
+
+    </script>
+  </head>
+  
+  <body class="claro">
+    <div id="mainWindow" data-dojo-type="dijit/layout/BorderContainer" data-dojo-props="design:'headline',gutters:false" style="width:100%; height:100%;">
+
+      <div data-dojo-type="dijit/layout/ContentPane" data-dojo-props="region:'left'" class="roundedCorners" id="leftPane">
+              <div id="templatePickerDiv"></div>
+      </div>
+
+      <div id="map" class="shadow roundedCorners" data-dojo-type="dijit/layout/ContentPane" data-dojo-props="region:'center'">
+        <div id="HomeButton1"></div>
+
+            <!-- Parcel-Address Search box -->
+            <div id="findParcel"  title="Find Parcel or Site Address"   
+              style="z-index: 1;background:#fff url('images/blueBodyBg3.gif') repeat-x top left;
+                      border-color:#717b87;border-style:solid;border-width:1px;display: block; 
+                      position: absolute; right: 10px; top: 10px;box-shadow: rgba(0,0,0,0.4)0px 2px 4px;
+                      padding:3px;">
+              <div>
+
+              <input id="addressSiteBox" />&nbsp;    <!--update function programmatically-->
+              <button id="search" data-dojo-type="dijit/form/Button">Search Map</button>
+              <a href='javascript:void(0);' onclick="toggle_visibility('AddressParcelHelp');" title='Toggle Help' >Help</a>
+              <div id="livesearch"></div>
+              <input type="hidden" id="myParcelNumber" value="" />
+              <input type="hidden" id="myAddress" value="" />
+              <input type="hidden" id="myX" value="" />
+              <input type="hidden" id="myY" value="" />
+    
+                <!--Help instructions-->
+                <div id="AddressParcelHelp" style="display:none;margin:5px;">
+                  <p><b>PARCEL NUMBER:</b> Enter at least 5 digits for a parcel number.</p>
+                  <p>Wildcards: <b>%</b> for any number of characters and <b>_</b> for one character.<br>
+                  <ol>Example: <i>7% Market</i> for any address starting with 7 on Market</ol>
+                  <ol>Example: <i>7__ Market</i> for any address in the 700 block of Market</ol>
+        
+                  <p>Physical site address maintained as a GIS database by the City of Tacoma (govME). 
+                  <br>No estimation on current completeness or when data will include every address in Tacoma.</p>
+    
+                <p>Intersections can be located by separating the cross streets with an "&amp;".
+                <ol>Example: <i>Market St &amp; 9th St</i></ol>
+                 
+                Minimum requirements to locate an intersection include the two street names with <br>
+                at least one street type (usually ST or AV), and a street direction (N, S, E, or NE) <br>
+                if more than one exists (S 29th ST and N 29th ST).  
+      
+                <ol>
+                 
+                <br>For Tacoma the directions include:
+                <pre> 
+                N - north of 6th Ave & Division Ave
+                S - south of 6th Ave & Division Ave and west of A ST
+                E - east of A St and south of the Hylebos Waterway
+                NE - north of the Hylebos Waterway
+                </pre>
+                Example:
+                <i> Puget Sound Ave & N 29th St</i>
+                </ol>
+    
+                </div>           
+    
+              </div>
+    
+           </div>   <!--end seach box-->
+       
+      </div> <!-- end map -->
+    </div>
+
+
+
+        <!--Add point popup-->
+        <div id="pointPopup" dojoType="dijit/Dialog" title="Add location to database?"  style="text-align:center;">
+              <button id="addLocation" type="button"><!--update programmatically--></button>
+              <button dojoType="dijit/form/Button" type="button" onClick="dijit.byId('pointPopup').hide();">NO, try new address.</button>
+        </div>
+
+
+  </body>
+
+</html>
